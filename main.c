@@ -1,21 +1,159 @@
+#include <endian.h>
+#include <errno.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdbool.h>
+#include <string.h>
+
 #include <pcap.h>
 #include <pcap/pcap.h>
+
+#include "./depends/radiotap/radiotap.h"
+#include "./depends/radiotap/radiotap_iter.h"
 
 #define LOOP_FOREVER 0
 #define CAPTURE_USER ""
 
-void packet_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *bytes) {
+#define MAC2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
+#define MACSTR "%02x:%02x:%02x:%02x:%02x:%02x"
+
+struct ieee80211_hdr {
+	unsigned short frame_control;
+	unsigned short duration_id;
+	unsigned char addr1[6];
+	unsigned char addr2[6];
+	unsigned char addr3[6];
+	unsigned short seq_ctrl;
+	unsigned short addr4[6];
+} __attribute__ ((packed));
+
+static const struct ieee80211_radiotap_namespace ns[] = {};
+
+static const struct ieee80211_radiotap_vendor_namespaces vns = {
+  .ns = ns,
+  .n_ns = 0,
+};
+
+// Please excuse this filthyness
+void print_channel_flags(u_short flags) {
+  char enabled_flags[8][128];
+  int i = 0;
+
+  if (flags & 0x0010) {
+    strcpy(enabled_flags[i], "Turbo channel");
+    i++;
+  }
+  if (flags & 0x0020) {
+    strcpy(enabled_flags[i], "CCK channel");
+    i++;
+  }
+  if (flags & 0x0040) {
+    strcpy(enabled_flags[i], "OFDM channel");
+    i++;
+  }
+  if (flags & 0x0080) {
+    strcpy(enabled_flags[i], "2 GHz spectrum channel");
+    i++;
+  }
+  if (flags & 0x0100) {
+    strcpy(enabled_flags[i], "5 GHz spectrum channel");
+    i++;
+  }
+  if (flags & 0x0200) {
+    strcpy(enabled_flags[i], "Only passive scan allowed");
+    i++;
+  }
+  if (flags & 0x0400) {
+    strcpy(enabled_flags[i], "Dynamic CCK-OFDM channel");
+    i++;
+  }
+  if (flags & 0x0800) {
+    strcpy(enabled_flags[i], "GFSK channel (FHSS PHY)");
+    i++;
+  }
+
+  printf("Channel flags: ");
+  if (i == 0) {
+    printf("-\n");
+  } else {
+    for(int j = 0; j < i; j++) {
+      printf("%s", enabled_flags[j]);
+
+      // If not last flag, print a comma and spacing
+      if (j != i - 1) {
+        printf(", ");
+      }
+    }
+    printf("\n");
+  }
+}
+
+void packet_handler(u_char *user, const struct pcap_pkthdr *header, const u_char *bytes) {
+  struct ieee80211_radiotap_iterator *iter = malloc(sizeof *iter);
+  int err;
+
   printf(
-    "-----\ntimestamp:\t\t%d\ncapture length:\t\t%u\nraw packet length:\t%u\n",
-    h->ts,
-    h->caplen,
-    h->len
+    "-----\nTimestamp:\t\t%ld\nCapture length:\t\t%lu\nRaw packet length:\t%lu\n",
+    header->ts.tv_sec,
+    header->caplen,
+    header->len
   );
 
-  fwrite(bytes, 1, h->len, stdout);
+  err = ieee80211_radiotap_iterator_init(iter, (struct ieee80211_radiotap_header*) bytes, header->len, &vns);
+  if (err != 0) {
+    printf("Unable to initialise radiotap parser\n");
+    return;
+  }
+
+  /* Iterate through all the radiotap fields and print */
+  int i = 0;
+  while (i != -ENOENT && i != -EINVAL) {
+    i = ieee80211_radiotap_iterator_next(iter);
+    switch (iter->this_arg_index) {
+      case IEEE80211_RADIOTAP_DBM_ANTSIGNAL:
+        printf("Antenna signal: %hhd dBm\n", *(char*) iter->this_arg);
+        break;
+      case IEEE80211_RADIOTAP_DBM_ANTNOISE:
+        printf("Antenna noise: %hhd dBm\n", *(char*) iter->this_arg);
+        break;
+      case IEEE80211_RADIOTAP_CHANNEL:
+        printf("Channel Frequency: %hu MHz\n", le16toh(*(u_short*) iter->this_arg));
+        print_channel_flags(le16toh(*(u_short*) iter->this_arg+2));
+        break;
+      default:
+        break;
+    }
+  }
+
+  unsigned int header_length = ((struct ieee80211_radiotap_header*)bytes)->it_len;
+  printf("Radiotap header length: %u", header_length);
+
+  if (i == -EINVAL) {
+    printf("Something bad happened while parsing radiotap packet");
+  }
+
+  printf("\n");
+
+  // ******* play with rest of the packet
+
+  u_char *payload = bytes + header_length;
+  int payload_length = header->len - header_length;
+
+  //printf("Radio tap header:\n");
+  //fwrite(bytes, 1, header_length, stdout);
+  //printf("\n");
+  //printf("802.11 frame:\n");
+  //fwrite(payload, 1, payload_length, stdout);
+  //printf("\n");
+
+  struct ieee80211_hdr *frame_header = (struct ieee80211_hdr*) payload;
+  printf("Frame Control: %04hx\n", frame_header->frame_control);
+  printf("Frame Control: %04hu us\n", frame_header->duration_id);
+  printf("Source address: "MACSTR"\n", MAC2STR(frame_header->addr2));
+  printf("Destination address: "MACSTR"\n", MAC2STR(frame_header->addr1));
+  printf("Bssid: "MACSTR"\n", MAC2STR(frame_header->addr3));
+
+  printf("\n");
   return;
 }
 
