@@ -10,12 +10,16 @@
 
 #include "./depends/radiotap/radiotap.h"
 #include "./depends/radiotap/radiotap_iter.h"
+#include "./alsa.h"
 
 #define LOOP_FOREVER 0
 #define CAPTURE_USER ""
 
 #define MAC2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
 #define MACSTR "%02x:%02x:%02x:%02x:%02x:%02x"
+
+// Filthy global alsa handle
+static snd_pcm_t *playback_handle;
 
 struct ieee80211_hdr {
 	unsigned short frame_control;
@@ -152,8 +156,15 @@ void packet_handler(u_char *user, const struct pcap_pkthdr *header, const u_char
   printf("Source address: "MACSTR"\n", MAC2STR(frame_header->addr2));
   printf("Destination address: "MACSTR"\n", MAC2STR(frame_header->addr1));
   printf("Bssid: "MACSTR"\n", MAC2STR(frame_header->addr3));
-
   printf("\n");
+
+  // Write the bytes directly out as sound
+  snd_pcm_prepare(playback_handle);
+  int alsa_err;
+  if ((alsa_err = snd_pcm_writei(playback_handle, payload, payload_length)) != payload_length) {
+    printf("Couldn't play sound: %s", snd_strerror(alsa_err));
+  }
+
   return;
 }
 
@@ -186,6 +197,8 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "Couldn't activate capture handle: %s\n", errdesc);
     return(1);
   }
+
+  playback_handle = init_playback_handle("hw:0,0", 2, 44100);
 
   pcap_loop(capture_handle, LOOP_FOREVER, &packet_handler, CAPTURE_USER);
 

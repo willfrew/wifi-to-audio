@@ -1,5 +1,5 @@
 build:
-	gcc ./main.c ./depends/radiotap/radiotap.c -o main -lpcap
+	gcc ./main.c ./depends/radiotap/radiotap.c ./alsa.c -o main -lpcap -lasound
 
 clean:
 	$(RM) main
