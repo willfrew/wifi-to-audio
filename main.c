@@ -1,25 +1,30 @@
 #include <endian.h>
 #include <errno.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <pcap.h>
 #include <pcap/pcap.h>
+#include <pulse/mainloop.h>
+
+// TODO remove
+#include <pulse/util.h>
 
 #include "./depends/radiotap/radiotap.h"
 #include "./depends/radiotap/radiotap_iter.h"
-#include "./alsa.h"
+#include "./def.h"
+#include "./pulse.h"
+#include "./drop-root.h"
 
 #define LOOP_FOREVER 0
 #define CAPTURE_USER ""
 
 #define MAC2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
 #define MACSTR "%02x:%02x:%02x:%02x:%02x:%02x"
-
-// Filthy global alsa handle
-static snd_pcm_t *playback_handle;
 
 struct ieee80211_hdr {
 	unsigned short frame_control;
@@ -158,14 +163,22 @@ void packet_handler(u_char *user, const struct pcap_pkthdr *header, const u_char
   printf("Bssid: "MACSTR"\n", MAC2STR(frame_header->addr3));
   printf("\n");
 
-  // Write the bytes directly out as sound
-  snd_pcm_prepare(playback_handle);
-  int alsa_err;
-  if ((alsa_err = snd_pcm_writei(playback_handle, payload, payload_length)) != payload_length) {
-    printf("Couldn't play sound: %s", snd_strerror(alsa_err));
-  }
-
   return;
+}
+
+void generate_audio_callback(void* buffer, size_t num_bytes) {
+  printf("Audio data requested!\n");
+}
+
+void *run_audio_thread(void *arg) {
+  app_audio_context *audio_context = (app_audio_context *) arg;
+
+  pa_mainloop* audio_mainloop = setup_pulseaudio_connection(audio_context);
+
+  if (pa_mainloop_run(audio_mainloop, NULL) < 0) {
+    fprintf(stderr, "Failed to start the main loop running.\n");
+    exit(1);
+  }
 }
 
 int main(int argc, char *argv[]) {
@@ -198,8 +211,19 @@ int main(int argc, char *argv[]) {
     return(1);
   }
 
-  playback_handle = init_playback_handle("hw:0,0", 2, 44100);
+  if (drop_root_privileges() != 0) {
+    fprintf(stderr, "Couldn't drop root privileges");
+  }
 
+  app_audio_context audio_context = {
+    audio_generation_callback: generate_audio_callback,
+  };
+
+  pthread_t *audio_thread = malloc(sizeof(pthread_t));
+
+  pthread_create(audio_thread, NULL, run_audio_thread, &audio_context);
+
+  // TODO switch to either manually driving the pcap & pulse loops or go multiprocess/threaded.
   pcap_loop(capture_handle, LOOP_FOREVER, &packet_handler, CAPTURE_USER);
 
   return(0);

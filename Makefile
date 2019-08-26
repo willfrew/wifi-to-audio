@@ -1,8 +1,8 @@
 build:
-	gcc ./main.c ./depends/radiotap/radiotap.c ./alsa.c -o main -lpcap -lasound
+	gcc ./main.c ./depends/radiotap/radiotap.c ./pulse.c ./drop-root.c -o main -lpcap -lpulse -pthread -lm
 
-build_pulse:
-	gcc ./pulse_test.c -o pulse_test -lpulse -lm
+run:
+	sudo -E ./main
 
 clean:
 	$(RM) main

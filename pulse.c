@@ -8,11 +8,12 @@
 #include <pulse/def.h>
 #include <pulse/error.h>
 #include <pulse/mainloop.h>
-#include <pulse/rtclock.h>
 #include <pulse/sample.h>
 #include <pulse/stream.h>
 
-#define APP_NAME "wifi-2-audio"
+#include "def.h"
+
+#define APP_NAME "wifi-to-audio"
 
 pa_mainloop_api* mainloop_api;
 
@@ -22,7 +23,7 @@ static const pa_sample_spec sample_spec = {
   channels: 1,
 };
 
-void exit(int code) {
+void graceful_exit(int code) {
   mainloop_api->quit(mainloop_api, code);
 }
 
@@ -33,18 +34,16 @@ void stream_state_callback(pa_stream* stream, void* userdata) {
     case PA_STREAM_READY:
       break;
 
-
     case PA_STREAM_TERMINATED:
       printf("Stream terminated\n");
-      exit(0);
+      graceful_exit(0);
       break;
 
     case PA_STREAM_FAILED:
       fprintf(stderr, "Stream failed:\n%s\n", pa_strerror(pa_context_errno((pa_stream_get_context(stream)))));
-      exit(1);
+      graceful_exit(1);
       break;
   }
-
 }
 
 void stream_write_callback(pa_stream* stream, size_t num_bytes, void* userdata) {
@@ -52,7 +51,7 @@ void stream_write_callback(pa_stream* stream, size_t num_bytes, void* userdata) 
   static int current_position = 0;
 
   double tau = 6.28318530; // Radians
-  double freq = 44; // Hz
+  double freq = 440; // Hz
   double rate = 44100; // Bytes/second
   int period = rate / freq; // Bytes
   double conv = tau / period; // Radians / byte
@@ -60,7 +59,11 @@ void stream_write_callback(pa_stream* stream, size_t num_bytes, void* userdata) 
   unsigned char* buffer;
 
   // Ask the server to initialise our buffer and hand us back a pointer to it
-  pa_stream_begin_write(stream, (void**) &buffer, &num_bytes);
+  if ((pa_stream_begin_write(stream, (void**) &buffer, &num_bytes)) != 0) {
+    fprintf(stderr, "Failed initialising write buffer:\n%s\n", pa_strerror(pa_context_errno(pa_stream_get_context(stream))));
+  }
+
+  ((app_audio_context*) userdata)->audio_generation_callback(buffer, num_bytes);
 
   for (int i = 0; i < num_bytes; i++) {
     buffer[i] = ((unsigned char) ((sin(current_position * conv) * 127) + 128));
@@ -92,7 +95,7 @@ void context_state_callback(pa_context* context, void* userdata) {
       break;
 
     case PA_CONTEXT_TERMINATED:
-      exit(0);
+      graceful_exit(0);
       break;
 
     case PA_CONTEXT_READY:
@@ -100,10 +103,10 @@ void context_state_callback(pa_context* context, void* userdata) {
         fprintf(stderr, "Couldn't create audio stream:\n%s\n", pa_strerror(pa_context_errno(context)));
       }
 
-      pa_stream_set_state_callback(stream, stream_state_callback, NULL);
-      pa_stream_set_write_callback(stream, stream_write_callback, NULL);
-      pa_stream_set_overflow_callback(stream, stream_overflow_callback, NULL);
-      pa_stream_set_underflow_callback(stream, stream_underflow_callback, NULL);
+      pa_stream_set_state_callback(stream, stream_state_callback, userdata);
+      pa_stream_set_write_callback(stream, stream_write_callback, userdata);
+      pa_stream_set_overflow_callback(stream, stream_overflow_callback, userdata);
+      pa_stream_set_underflow_callback(stream, stream_underflow_callback, userdata);
 
 
       err = pa_stream_connect_playback(
@@ -117,27 +120,25 @@ void context_state_callback(pa_context* context, void* userdata) {
 
       if (err != 0) {
         fprintf(stderr, "Error connecting playback stream:\n%s\n", pa_strerror(pa_context_errno(context)));
-        exit(1);
+        graceful_exit(1);
       }
       break;
 
     case PA_CONTEXT_FAILED:
     default:
       fprintf(stderr, "Connection failed:\n%s\n", pa_strerror(pa_context_errno(context)));
-      mainloop_api->quit(mainloop_api, 1);
+      graceful_exit(1);
       break;
   }
 }
 
-
-int main() {
-  int err;
+pa_mainloop* setup_pulseaudio_connection(app_audio_context* app_context) {
   pa_mainloop* mainloop = NULL;
   pa_context* context = NULL;
 
   if (!pa_sample_spec_valid(&sample_spec)) {
     fprintf(stderr, "Invalid sample specification\n");
-    return 1;
+    return NULL;
   }
 
   mainloop = pa_mainloop_new();
@@ -145,20 +146,15 @@ int main() {
 
   if (!(context = pa_context_new(mainloop_api, APP_NAME))) {
     fprintf(stderr, "Couldn't create pulseaudio context\n");
-    return 1;
+    return NULL;
   }
 
-  pa_context_set_state_callback(context, context_state_callback, NULL);
+  pa_context_set_state_callback(context, context_state_callback, app_context);
 
   if (pa_context_connect(context, NULL, PA_CONTEXT_NOAUTOSPAWN, NULL) < 0) {
     fprintf(stderr, "Failed to connect to pulseaudio server:\n%s\n", pa_strerror(pa_context_errno(context)));
-    return 1;
+    return NULL;
   }
 
-  if (pa_mainloop_run(mainloop, NULL) < 0) {
-    fprintf(stderr, "Failed to start the main loop running.\n");
-    exit(1);
-  }
-
-  return 0;
+  return mainloop;
 }
