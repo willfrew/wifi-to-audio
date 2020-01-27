@@ -1,5 +1,6 @@
 #include <endian.h>
 #include <errno.h>
+#include <math.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -22,6 +23,7 @@
 
 #define LOOP_FOREVER 0
 #define CAPTURE_USER ""
+#define DEVICE_NAME "wlp0s20f0u1"
 
 #define MAC2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
 #define MACSTR "%02x:%02x:%02x:%02x:%02x:%02x"
@@ -167,7 +169,19 @@ void packet_handler(u_char *user, const struct pcap_pkthdr *header, const u_char
 }
 
 void generate_audio_callback(void* buffer, size_t num_bytes) {
-  printf("Audio data requested!\n");
+  // Ensures that we maintain a continuous sine wave across separate writes.
+  static int current_position = 0;
+
+  double tau = 6.28318530; // Radians
+  double freq = 440; // Hz
+  double rate = 44100; // Bytes/second
+  int period = rate / freq; // Bytes
+  double conv = tau / period; // Radians / byte
+
+  for (int i = 0; i < num_bytes; i++) {
+    ((unsigned char*) buffer)[i] = ((unsigned char) ((sin(current_position * conv) * 127) + 128));
+    current_position = (current_position + 1) % period;
+  }
 }
 
 void *run_audio_thread(void *arg) {
@@ -184,18 +198,9 @@ void *run_audio_thread(void *arg) {
 int main(int argc, char *argv[]) {
   int err;
   char errbuf[PCAP_ERRBUF_SIZE];
-  pcap_if_t **devices = malloc(sizeof *devices);
   pcap_t *capture_handle;
 
-  err = pcap_findalldevs(devices, errbuf);
-  if(err == -1) {
-    fprintf(stderr, "Couldnt find default device: %s\n", errbuf);
-    return(1);
-  }
-
-  printf("Device found: %s\n", (*devices)->name);
-
-  capture_handle = pcap_create((*devices)->name, errbuf);
+  capture_handle = pcap_create(DEVICE_NAME, errbuf);
   if (capture_handle == NULL) {
     fprintf(stderr, "Couldn't create capture handle: %s\n", errbuf);
     return(1);
@@ -223,7 +228,6 @@ int main(int argc, char *argv[]) {
 
   pthread_create(audio_thread, NULL, run_audio_thread, &audio_context);
 
-  // TODO switch to either manually driving the pcap & pulse loops or go multiprocess/threaded.
   pcap_loop(capture_handle, LOOP_FOREVER, &packet_handler, CAPTURE_USER);
 
   return(0);

@@ -1,4 +1,3 @@
-#include <math.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,15 +46,6 @@ void stream_state_callback(pa_stream* stream, void* userdata) {
 }
 
 void stream_write_callback(pa_stream* stream, size_t num_bytes, void* userdata) {
-  // Ensures that we maintain a continuous sine wave across separate writes.
-  static int current_position = 0;
-
-  double tau = 6.28318530; // Radians
-  double freq = 440; // Hz
-  double rate = 44100; // Bytes/second
-  int period = rate / freq; // Bytes
-  double conv = tau / period; // Radians / byte
-
   unsigned char* buffer;
 
   // Ask the server to initialise our buffer and hand us back a pointer to it
@@ -64,11 +54,6 @@ void stream_write_callback(pa_stream* stream, size_t num_bytes, void* userdata) 
   }
 
   ((app_audio_context*) userdata)->audio_generation_callback(buffer, num_bytes);
-
-  for (int i = 0; i < num_bytes; i++) {
-    buffer[i] = ((unsigned char) ((sin(current_position * conv) * 127) + 128));
-    current_position = (current_position + 1) % period;
-  }
 
   if ((pa_stream_write(stream, buffer, num_bytes, NULL, 0, PA_SEEK_RELATIVE)) != 0) {
     fprintf(stderr, "Failed writing data to stream:\n%s\n", pa_strerror(pa_context_errno(pa_stream_get_context(stream))));
